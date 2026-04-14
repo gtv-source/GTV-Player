@@ -1,0 +1,32 @@
+#include <winver.h>
+#include "config-host.h"
+
+1 VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEFLAGSMASK 0x3fL
+FILEOS 0x40004
+FILETYPE 0x1
+FILESUBTYPE 0x0L
+{
+  BLOCK "StringFileInfo"
+  {
+    BLOCK "040904E4"
+    {
+        VALUE "CompanyName", "GTV"
+        VALUE "ProductName", "Huyen Thoai Dota"
+        VALUE "FileDescription", "Huyen Thoai Dota Launcher"
+        VALUE "FileVersion", "1.0.0"
+        VALUE "ProductVersion", "1.0.0"
+        VALUE "OriginalFilename", "Huyen Thoai Dota.exe"
+        VALUE "InternalName", "HuyenThoaiDota"
+        VALUE "LegalCopyright", "© 2026 GTV. All rights reserved."
+    }
+  }
+  BLOCK "VarFileInfo"
+  {
+    VALUE "Translation", 0x0409, 1252
+  }
+}
+
+IDI_ICON1 ICON "pc-bios/HTDT.ico"
