@@ -18,15 +18,16 @@
 #pragma GCC diagnostic pop
 
 #ifdef CONFIG_SDL_IMAGE
-# include <SDL_image.h>
+#include <SDL_image.h>
 #endif
 
 #include "ui/kbd-state.h"
 #ifdef CONFIG_OPENGL
-# include "ui/egl-helpers.h"
+#include "ui/egl-helpers.h"
 #endif
 
-struct sdl2_console {
+struct sdl2_console
+{
     DisplayGLCtx dgc;
     DisplayChangeListener dcl;
     DisplaySurface *surface;
@@ -34,6 +35,8 @@ struct sdl2_console {
     SDL_Texture *texture;
     SDL_Window *real_window;
     SDL_Renderer *real_renderer;
+    int fixed_xres;
+    int fixed_yres;
     int idx;
     int last_vm_running; /* per console for caption reasons */
     int x, y, w, h;
@@ -52,6 +55,13 @@ struct sdl2_console {
     bool y0_top;
     bool scanout_mode;
 #endif
+
+    /* --- GTV Launcher Fields --- */
+    SDL_Texture *launcher_texture; // Texture cho chế độ 2D
+    uint32_t launcher_gl_tex;      // Texture ID cho chế độ OpenGL
+    int launcher_alpha;            // Độ mờ (0-255)
+    bool is_launcher_active;       // Trạng thái hiển thị
+    int frame_ready_count;         // Bộ đếm nhận diện Android boot
 };
 
 void sdl2_window_create(struct sdl2_console *scon);

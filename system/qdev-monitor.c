@@ -122,6 +122,8 @@ static const QDevAlias qdev_alias_table[] = {
     { "virtio-tablet-device", "virtio-tablet", QEMU_ARCH_VIRTIO_MMIO },
     { "virtio-tablet-ccw", "virtio-tablet", QEMU_ARCH_VIRTIO_CCW },
     { "virtio-tablet-pci", "virtio-tablet", QEMU_ARCH_VIRTIO_PCI },
+    { "virtio-touchscreen-device", "virtio-touchscreen", QEMU_ARCH_VIRTIO_MMIO },
+    { "virtio-touchscreen-pci", "virtio-touchscreen", QEMU_ARCH_VIRTIO_PCI },
     { }
 };
 

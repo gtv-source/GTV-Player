@@ -1465,10 +1465,12 @@
 # @grab-mod: Modifier keys that should be pressed together with the
 #     "G" key to release the mouse grab.
 #
+# @width: Desired window width (GTV Custom).
+# @height: Desired window height (GTV Custom).
 # Since: 7.1
 ##
 { 'struct'  : 'DisplaySDL',
-  'data'    : { '*grab-mod'   : 'HotKeyMod' } }
+  'data'    : { '*grab-mod'   : 'HotKeyMod', '*width': 'int', '*height': 'int' } }
 
 ##
 # @DisplayType:

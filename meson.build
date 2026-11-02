@@ -1,7 +1,11 @@
-project('qemu', ['c'], meson_version: '>=1.5.0',
+project('GTV-Player', ['c'], meson_version: '>=1.5.0',
         default_options: ['warning_level=1', 'c_std=gnu11', 'cpp_std=gnu++11', 'b_colorout=auto',
                           'b_staticpic=false', 'stdsplit=false', 'optimization=2', 'b_pie=true'],
         version: files('VERSION'))
+
+if host_machine.system() == 'windows'
+  add_project_link_arguments('-lopengl32', language: 'c')
+endif
 
 add_test_setup('quick', exclude_suites: ['slow', 'thorough'], is_default: true)
 add_test_setup('slow', exclude_suites: ['thorough'], env: ['G_TEST_SLOW=1', 'SPEED=slow'])
@@ -39,7 +43,7 @@ qemu_docdir = get_option('docdir') / get_option('qemu_suffix')
 qemu_moddir = get_option('libdir') / get_option('qemu_suffix')
 
 qemu_desktopdir = get_option('datadir') / 'applications'
-qemu_icondir = get_option('datadir') / 'icons'
+gtv_icondir = get_option('datadir') / 'icons'
 
 genh = []
 qapi_trace_events = []
@@ -296,6 +300,7 @@ if cpu in ['x86', 'x86_64']
     'CONFIG_HVF': ['x86_64-softmmu'],
     'CONFIG_NVMM': ['i386-softmmu', 'x86_64-softmmu'],
     'CONFIG_WHPX': ['i386-softmmu', 'x86_64-softmmu'],
+    'CONFIG_AEHD': ['x86_64-softmmu'],
   }
 endif
 
@@ -807,8 +812,42 @@ if host_os == 'windows'
   winmm = cc.find_library('winmm')
 
   win = import('windows')
+
+  # G-Player version info comes from gplayer/release-info.conf (KEY="value"
+  # lines); fs.read() makes meson regenerate when that file changes
+  gplayer_info = {}
+  foreach line : fs.read('gplayer/release-info.conf').split('\n')
+    line = line.strip()
+    if line == '' or line.startswith('#') or not line.contains('=')
+      continue
+    endif
+    parts = line.split('=')
+    val = ''
+    foreach i : range(1, parts.length())   # values may contain '=' (URLs)
+      val += (i > 1 ? '=' : '') + parts[i]
+    endforeach
+    gplayer_info += {parts[0].strip(): val.strip().strip('"')}
+  endforeach
+  gplayer_ver = gplayer_info.get('VERSION', '0.0.0').split('.')
+  if gplayer_ver.length() > 4
+    error('gplayer/release-info.conf: VERSION must be x.y.z or x.y.z.w')
+  endif
+  foreach i : range(gplayer_ver.length(), 4)
+    gplayer_ver += '0'
+  endforeach
+  gplayer_vh = configuration_data()
+  gplayer_vh.set('GPLAYER_VERSION_BIN', ','.join(gplayer_ver))
+  gplayer_vh.set_quoted('GPLAYER_VERSION_STR', '.'.join(gplayer_ver))
+  gplayer_vh.set_quoted('GPLAYER_COMPANY', gplayer_info.get('COMPANY', ''))
+  gplayer_vh.set_quoted('GPLAYER_PRODUCT', gplayer_info.get('PRODUCT', ''))
+  gplayer_vh.set_quoted('GPLAYER_DESCRIPTION', gplayer_info.get('DESCRIPTION', ''))
+  gplayer_vh.set_quoted('GPLAYER_COPYRIGHT', gplayer_info.get('COPYRIGHT', ''))
+  gplayer_version_h = configure_file(output: 'gplayer-version.h',
+                                     configuration: gplayer_vh)
+
   version_res = win.compile_resources('version.rc',
-                                      depend_files: files('pc-bios/qemu-nsis.ico'),
+                                      depend_files: files('pc-bios/gtv.ico',
+                                                          'gplayer/release-info.conf'),
                                       include_directories: include_directories('.'))
   host_dsosuf = '.dll'
 elif host_os == 'darwin'
@@ -845,6 +884,10 @@ if get_option('whpx').allowed() and host_os == 'windows'
        cc.has_header('winhvemulation.h', required: get_option('whpx'))
     accelerators += 'CONFIG_WHPX'
   endif
+endif
+# Android Emulator Hypervisor Driver: only DeviceIoControl, no SDK headers
+if host_os == 'windows' and host_machine.cpu() == 'x86_64'
+  accelerators += 'CONFIG_AEHD'
 endif
 
 hvf = not_found
@@ -2366,7 +2409,7 @@ endforeach
 config_host_data.set('CONFIG_QEMU_FIRMWAREPATH', qemu_firmwarepath)
 
 config_host_data.set_quoted('CONFIG_QEMU_HELPERDIR', get_option('prefix') / get_option('libexecdir'))
-config_host_data.set_quoted('CONFIG_QEMU_ICONDIR', get_option('prefix') / qemu_icondir)
+config_host_data.set_quoted('CONFIG_QEMU_ICONDIR', get_option('prefix') / gtv_icondir)
 config_host_data.set_quoted('CONFIG_QEMU_LOCALEDIR', get_option('prefix') / get_option('localedir'))
 config_host_data.set_quoted('CONFIG_QEMU_LOCALSTATEDIR', get_option('prefix') / get_option('localstatedir'))
 config_host_data.set_quoted('CONFIG_QEMU_MODDIR', get_option('prefix') / qemu_moddir)
@@ -4101,6 +4144,9 @@ endif
 
 traceable = []
 emulators = {}
+winhttp_dep = cc.find_library('winhttp')
+wininet_dep = cc.find_library('wininet')
+
 foreach target : target_dirs
   config_target = config_target_mak[target]
   target_name = config_target['TARGET_NAME']
@@ -4229,14 +4275,14 @@ foreach target : target_dirs
       'name': 'qemu-system-' + target_name,
       'win_subsystem': 'console',
       'sources': files('system/main.c'),
-      'dependencies': [sdl]
+      'dependencies': [sdl, wininet_dep, winhttp_dep]
     }]
     if host_os == 'windows' and (sdl.found() or gtk.found())
       execs += [{
         'name': 'qemu-system-' + target_name + 'w',
         'win_subsystem': 'windows',
         'sources': files('system/main.c'),
-        'dependencies': [sdl]
+        'dependencies': [sdl, wininet_dep, winhttp_dep]
       }]
     endif
     if get_option('fuzzing')
@@ -4622,6 +4668,7 @@ if have_system
   summary_info += {'KVM support':       config_all_accel.has_key('CONFIG_KVM')}
   summary_info += {'HVF support':       config_all_accel.has_key('CONFIG_HVF')}
   summary_info += {'WHPX support':      config_all_accel.has_key('CONFIG_WHPX')}
+  summary_info += {'AEHD support':      config_all_accel.has_key('CONFIG_AEHD')}
   summary_info += {'NVMM support':      config_all_accel.has_key('CONFIG_NVMM')}
   summary_info += {'Xen support':       xen.found()}
   if xen.found()

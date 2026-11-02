@@ -44,6 +44,8 @@ extern "C" {
 
 void os_set_line_buffering(void);
 void os_setup_early_signal_handling(void);
+static inline void os_tune_tcg_process(void) {}
+static inline void os_tune_vcpu_thread(void) {}
 void os_set_proc_name(const char *s);
 void os_setup_signal_handling(void);
 int os_set_daemonize(bool d);

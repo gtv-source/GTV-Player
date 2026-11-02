@@ -20,6 +20,7 @@
 #define VIRTIO_ID_NAME_MOUSE        "QEMU Virtio Mouse"
 #define VIRTIO_ID_NAME_TABLET       "QEMU Virtio Tablet"
 #define VIRTIO_ID_NAME_MULTITOUCH   "QEMU Virtio MultiTouch"
+#define VIRTIO_ID_NAME_TOUCHSCREEN  "QEMU Virtio Touchscreen"
 
 /* ----------------------------------------------------------------- */
 
@@ -626,6 +627,117 @@ static const TypeInfo virtio_multitouch_info = {
 
 /* ----------------------------------------------------------------- */
 
+/*
+ * Single-touch absolute touchscreen.
+ *
+ * Takes the same absolute pointer + button events as virtio-tablet (so any
+ * UI that drives a tablet works unchanged), but reports the left button as
+ * BTN_TOUCH and sets INPUT_PROP_DIRECT.  Guests such as Android then bind
+ * it to their touchscreen driver instead of the mouse/cursor one:
+ *  - apps see SOURCE_TOUCHSCREEN events (game engines like Cocos or
+ *    GameActivity ignore SOURCE_MOUSE clicks entirely);
+ *  - the last X/Y are kept by the guest touch driver, so a press that
+ *    arrives without a fresh ABS_X/ABS_Y (the kernel drops unchanged axis
+ *    values) still lands at the pointer position;
+ *  - coordinates follow the display rotation like a built-in panel.
+ */
+static void virtio_touchscreen_handle_event(DeviceState *dev, QemuConsole *src,
+                                            InputEvent *evt)
+{
+    VirtIOInput *vinput = VIRTIO_INPUT(dev);
+    virtio_input_event event;
+    InputBtnEvent *btn;
+
+    if (evt->type != INPUT_EVENT_KIND_BTN) {
+        virtio_input_handle_event(dev, src, evt);
+        return;
+    }
+
+    btn = evt->u.btn.data;
+    if (btn->button != INPUT_BUTTON_LEFT && btn->button != INPUT_BUTTON_TOUCH) {
+        /* a touchscreen has nothing to map right/middle/wheel to */
+        return;
+    }
+    event.type  = cpu_to_le16(EV_KEY);
+    event.code  = cpu_to_le16(BTN_TOUCH);
+    event.value = cpu_to_le32(btn->down ? 1 : 0);
+    virtio_input_send(vinput, &event);
+}
+
+static const QemuInputHandler virtio_touchscreen_handler = {
+    .name  = VIRTIO_ID_NAME_TOUCHSCREEN,
+    .mask  = INPUT_EVENT_MASK_BTN | INPUT_EVENT_MASK_ABS,
+    .event = virtio_touchscreen_handle_event,
+    .sync  = virtio_input_handle_sync,
+};
+
+static struct virtio_input_config virtio_touchscreen_config[] = {
+    {
+        .select    = VIRTIO_INPUT_CFG_ID_NAME,
+        .size      = sizeof(VIRTIO_ID_NAME_TOUCHSCREEN),
+        .u.string  = VIRTIO_ID_NAME_TOUCHSCREEN,
+    },{
+        .select    = VIRTIO_INPUT_CFG_ID_DEVIDS,
+        .size      = sizeof(struct virtio_input_devids),
+        .u.ids     = {
+            .bustype = const_le16(BUS_VIRTUAL),
+            .vendor  = const_le16(0x0627), /* same we use for usb hid devices */
+            .product = const_le16(0x0004),
+            .version = const_le16(0x0001),
+        },
+    },{
+        .select    = VIRTIO_INPUT_CFG_EV_BITS,
+        .subsel    = EV_ABS,
+        .size      = 1,
+        .u.bitmap  = {
+            (1 << ABS_X) | (1 << ABS_Y),
+        },
+    },{
+        .select    = VIRTIO_INPUT_CFG_ABS_INFO,
+        .subsel    = ABS_X,
+        .size      = sizeof(virtio_input_absinfo),
+        .u.abs.min = const_le32(INPUT_EVENT_ABS_MIN),
+        .u.abs.max = const_le32(INPUT_EVENT_ABS_MAX),
+    },{
+        .select    = VIRTIO_INPUT_CFG_ABS_INFO,
+        .subsel    = ABS_Y,
+        .size      = sizeof(virtio_input_absinfo),
+        .u.abs.min = const_le32(INPUT_EVENT_ABS_MIN),
+        .u.abs.max = const_le32(INPUT_EVENT_ABS_MAX),
+    },
+    { /* end of list */ },
+};
+
+static void virtio_touchscreen_init(Object *obj)
+{
+    VirtIOInputHID *vhid = VIRTIO_INPUT_HID(obj);
+    VirtIOInput *vinput = VIRTIO_INPUT(obj);
+    unsigned short key_bits[] = {
+        BTN_TOUCH,
+    };
+    unsigned short abs_props[] = {
+        INPUT_PROP_DIRECT,
+    };
+
+    vhid->handler = &virtio_touchscreen_handler;
+    virtio_input_init_config(vinput, virtio_touchscreen_config);
+    virtio_input_extend_config(vinput, key_bits,
+                               ARRAY_SIZE(key_bits),
+                               VIRTIO_INPUT_CFG_EV_BITS, EV_KEY);
+    virtio_input_extend_config(vinput, abs_props,
+                               ARRAY_SIZE(abs_props),
+                               VIRTIO_INPUT_CFG_PROP_BITS, 0);
+}
+
+static const TypeInfo virtio_touchscreen_info = {
+    .name          = TYPE_VIRTIO_TOUCHSCREEN,
+    .parent        = TYPE_VIRTIO_INPUT_HID,
+    .instance_size = sizeof(VirtIOInputHID),
+    .instance_init = virtio_touchscreen_init,
+};
+
+/* ----------------------------------------------------------------- */
+
 static void virtio_register_types(void)
 {
     type_register_static(&virtio_input_hid_info);
@@ -633,6 +745,7 @@ static void virtio_register_types(void)
     type_register_static(&virtio_mouse_info);
     type_register_static(&virtio_tablet_info);
     type_register_static(&virtio_multitouch_info);
+    type_register_static(&virtio_touchscreen_info);
 }
 
 type_init(virtio_register_types)

@@ -26,6 +26,10 @@
 #include "sysemu/hw_accel.h"
 #include "monitor/monitor.h"
 #include "kvm/kvm_i386.h"
+#include "sysemu/aehd.h"
+#ifdef CONFIG_AEHD
+#include "aehd/aehd-i386.h"
+#endif
 #endif
 #include "qemu/log.h"
 #ifdef CONFIG_TCG
@@ -546,7 +550,7 @@ void cpu_report_tpr_access(CPUX86State *env, TPRAccess access)
     X86CPU *cpu = env_archcpu(env);
     CPUState *cs = env_cpu(env);
 
-    if (kvm_enabled() || whpx_enabled() || nvmm_enabled()) {
+    if (kvm_enabled() || whpx_enabled() || nvmm_enabled() || aehd_enabled()) {
         env->tpr_access_type = access;
 
         cpu_interrupt(cs, CPU_INTERRUPT_TPR);
@@ -608,6 +612,11 @@ void do_cpu_init(X86CPU *cpu)
     if (kvm_enabled()) {
         kvm_arch_do_init_vcpu(cpu);
     }
+#ifdef CONFIG_AEHD
+    if (aehd_enabled()) {
+        aehd_arch_do_init_vcpu(cpu);
+    }
+#endif
     apic_init_reset(cpu->apic_state);
 #endif /* CONFIG_USER_ONLY */
 }

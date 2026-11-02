@@ -111,6 +111,7 @@ static int tcg_init_machine(MachineState *ms)
 
     tcg_allowed = true;
     mttcg_enabled = s->mttcg_enabled;
+    os_tune_tcg_process();
 
     page_init();
     tb_htable_init();

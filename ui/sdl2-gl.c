@@ -29,17 +29,71 @@
 #include "ui/console.h"
 #include "ui/input.h"
 #include "ui/sdl2.h"
+#include "launcher_gl.h"
+
+static int frame_count = 0;
+
+static GLuint cursor_tex = 0;
+static int cursor_w = 0;
+static int cursor_h = 0;
+int mouse_x = 0;
+int mouse_y = 0;
+
+static void draw_cursor_gl(int win_w, int win_h)
+{
+    if (!cursor_tex)
+        return;
+
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, cursor_tex);
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    // setup 2D
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    glOrtho(0, win_w, win_h, 0, -1, 1);
+
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+
+    int x = mouse_x;
+    int y = mouse_y;
+
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0);
+    glVertex2f(x, y);
+    glTexCoord2f(1, 0);
+    glVertex2f(x + cursor_w, y);
+    glTexCoord2f(1, 1);
+    glVertex2f(x + cursor_w, y + cursor_h);
+    glTexCoord2f(0, 1);
+    glVertex2f(x, y + cursor_h);
+    glEnd();
+
+    glPopMatrix();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+
+    glDisable(GL_BLEND);
+}
 
 static void sdl2_set_scanout_mode(struct sdl2_console *scon, bool scanout)
 {
-    if (scon->scanout_mode == scanout) {
+    if (scon->scanout_mode == scanout)
+    {
         return;
     }
 
     scon->scanout_mode = scanout;
-    if (!scon->scanout_mode) {
+    if (!scon->scanout_mode)
+    {
         egl_fb_destroy(&scon->guest_fb);
-        if (scon->surface) {
+        if (scon->surface)
+        {
             surface_gl_destroy_texture(scon->gls, scon->surface);
             surface_gl_create_texture(scon->gls, scon->surface);
         }
@@ -57,6 +111,41 @@ static void sdl2_gl_render_surface(struct sdl2_console *scon)
     surface_gl_setup_viewport(scon->gls, scon->surface, ww, wh);
 
     surface_gl_render_texture(scon->gls, scon->surface);
+
+    SDL_GetWindowSize(scon->real_window, &ww, &wh);
+
+    draw_cursor_gl(ww, wh);
+
+    // ================= ADD LAUNCHER =================
+
+    frame_count++;
+
+    if (frame_count == 1)
+    {
+        int w, h;
+        SDL_GetWindowSize(scon->real_window, &w, &h);
+
+        launcher_gl_init(w, h);
+        launcher_gl_notify_framebuffer();
+    }
+
+    // RESET STATE TRƯỚC KHI VẼ
+    glUseProgram(0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+
+    // quan trọng nếu dùng immediate mode
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+
+    launcher_gl_update(scon->real_window);
+    // =================================================
+
     SDL_GL_SwapWindow(scon->real_window);
 }
 
@@ -67,7 +156,8 @@ void sdl2_gl_update(DisplayChangeListener *dcl,
 
     assert(scon->opengl);
 
-    if (!scon->real_window) {
+    if (!scon->real_window)
+    {
         return;
     }
 
@@ -89,19 +179,23 @@ void sdl2_gl_switch(DisplayChangeListener *dcl,
 
     scon->surface = new_surface;
 
-    if (surface_is_placeholder(new_surface) && qemu_console_get_index(dcl->con)) {
+    if (surface_is_placeholder(new_surface) && qemu_console_get_index(dcl->con))
+    {
         qemu_gl_fini_shader(scon->gls);
         scon->gls = NULL;
         sdl2_window_destroy(scon);
         return;
     }
 
-    if (!scon->real_window) {
+    if (!scon->real_window)
+    {
         sdl2_window_create(scon);
         scon->gls = qemu_gl_init_shader();
-    } else if (old_surface &&
-               ((surface_width(old_surface)  != surface_width(new_surface)) ||
-                (surface_height(old_surface) != surface_height(new_surface)))) {
+    }
+    else if (old_surface &&
+             ((surface_width(old_surface) != surface_width(new_surface)) ||
+              (surface_height(old_surface) != surface_height(new_surface))))
+    {
         sdl2_window_resize(scon);
     }
 
@@ -115,7 +209,8 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
     assert(scon->opengl);
 
     graphic_hw_update(dcl->con);
-    if (scon->updates && scon->real_window) {
+    if (scon->updates && scon->real_window)
+    {
         scon->updates = 0;
         sdl2_gl_render_surface(scon);
     }
@@ -126,12 +221,14 @@ void sdl2_gl_redraw(struct sdl2_console *scon)
 {
     assert(scon->opengl);
 
-    if (scon->scanout_mode) {
+    if (scon->scanout_mode)
+    {
         /* sdl2_gl_scanout_flush actually only care about
          * the first argument. */
         return sdl2_gl_scanout_flush(&scon->dcl, 0, 0, 0, 0);
     }
-    if (scon->surface) {
+    if (scon->surface)
+    {
         sdl2_gl_render_surface(scon);
     }
 }
@@ -148,10 +245,13 @@ QEMUGLContext sdl2_gl_create_context(DisplayGLCtx *dgc,
 
     SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 1);
     if (scon->opts->gl == DISPLAY_GL_MODE_ON ||
-        scon->opts->gl == DISPLAY_GL_MODE_CORE) {
+        scon->opts->gl == DISPLAY_GL_MODE_CORE)
+    {
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,
                             SDL_GL_CONTEXT_PROFILE_CORE);
-    } else if (scon->opts->gl == DISPLAY_GL_MODE_ES) {
+    }
+    else if (scon->opts->gl == DISPLAY_GL_MODE_ES)
+    {
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,
                             SDL_GL_CONTEXT_PROFILE_ES);
     }
@@ -163,7 +263,8 @@ QEMUGLContext sdl2_gl_create_context(DisplayGLCtx *dgc,
     /* If SDL fail to create a GL context and we use the "on" flag,
      * then try to fallback to GLES.
      */
-    if (!ctx && scon->opts->gl == DISPLAY_GL_MODE_ON) {
+    if (!ctx && scon->opts->gl == DISPLAY_GL_MODE_ON)
+    {
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,
                             SDL_GL_CONTEXT_PROFILE_ES);
         ctx = SDL_GL_CreateContext(scon->real_window);
@@ -231,10 +332,12 @@ void sdl2_gl_scanout_flush(DisplayChangeListener *dcl,
     int ww, wh;
 
     assert(scon->opengl);
-    if (!scon->scanout_mode) {
+    if (!scon->scanout_mode)
+    {
         return;
     }
-    if (!scon->guest_fb.framebuffer) {
+    if (!scon->guest_fb.framebuffer)
+    {
         return;
     }
 
@@ -244,5 +347,6 @@ void sdl2_gl_scanout_flush(DisplayChangeListener *dcl,
     egl_fb_setup_default(&scon->win_fb, ww, wh);
     egl_fb_blit(&scon->win_fb, &scon->guest_fb, !scon->y0_top);
 
+    launcher_gl_update(scon->real_window);
     SDL_GL_SwapWindow(scon->real_window);
 }

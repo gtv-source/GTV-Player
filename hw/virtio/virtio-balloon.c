@@ -157,6 +157,14 @@ static void balloon_deflate_page(VirtIOBalloon *balloon,
 
     host_addr = (void *)((uintptr_t)addr & ~(rb_page_size - 1));
 
+    /*
+     * Only a performance hint: hosts without madvise (Windows) skip it instead
+     * of logging one warning per deflated page.
+     */
+    if (QEMU_MADV_WILLNEED == QEMU_MADV_INVALID) {
+        return;
+    }
+
     /* When a page is deflated, we hint the whole host page it lives
      * on, since we can't do anything smaller */
     ret = qemu_madvise(host_addr, rb_page_size, QEMU_MADV_WILLNEED);

@@ -27,6 +27,11 @@
 #include "sysemu/hvf.h"
 #include "hvf/hvf-i386.h"
 #include "kvm/kvm_i386.h"
+#include "sysemu/aehd.h"
+#include "sysemu/whpx.h"
+#ifdef CONFIG_AEHD
+#include "aehd/aehd-i386.h"
+#endif
 #include "sev.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
@@ -6158,6 +6163,14 @@ uint64_t x86_cpu_get_supported_feature_word(X86CPU *cpu, FeatureWord w)
         r = hvf_get_supported_cpuid(wi->cpuid.eax,
                                     wi->cpuid.ecx,
                                     wi->cpuid.reg);
+#ifdef CONFIG_AEHD
+    } else if (aehd_enabled()) {
+        if (wi->type != CPUID_FEATURE_WORD) {
+            return 0;
+        }
+        r = aehd_arch_get_supported_cpuid(wi->cpuid.eax, wi->cpuid.ecx,
+                                          wi->cpuid.reg);
+#endif
     } else if (tcg_enabled()) {
         r = wi->tcg_features;
     } else {
@@ -7343,6 +7356,11 @@ static void x86_cpu_reset_hold(Object *obj, ResetType type)
     if (kvm_enabled()) {
         kvm_arch_reset_vcpu(cpu);
     }
+#ifdef CONFIG_AEHD
+    if (aehd_enabled()) {
+        aehd_arch_reset_vcpu(cpu);
+    }
+#endif
 
     x86_cpu_set_sgxlepubkeyhash(env);
 
@@ -7661,7 +7679,7 @@ static bool x86_cpu_filter_features(X86CPU *cpu, bool verbose)
     uint32_t eax_1, ebx_1, ecx_1, edx_1;
 
     if (verbose) {
-        prefix = accel_uses_host_cpuid()
+        prefix = accel_uses_host_cpuid() || aehd_enabled()
                  ? "host doesn't support requested feature"
                  : "TCG doesn't support requested feature";
     }
@@ -7827,7 +7845,7 @@ static void x86_cpu_realizefn(DeviceState *dev, Error **errp)
     if (x86_cpu_filter_features(cpu, cpu->check_cpuid || cpu->enforce_cpuid)) {
         if (cpu->enforce_cpuid) {
             error_setg(&local_err,
-                       accel_uses_host_cpuid() ?
+                       (accel_uses_host_cpuid() || aehd_enabled()) ?
                        "Host doesn't support requested features" :
                        "TCG doesn't support requested features");
             goto out;
@@ -7920,6 +7938,21 @@ static void x86_cpu_realizefn(DeviceState *dev, Error **errp)
          */
         if (cpu->phys_bits == 0) {
             cpu->phys_bits = TCG_PHYS_ADDR_BITS;
+        }
+        /*
+         * AEHD and WHPX run the guest on the host's page tables: an address
+         * width above the host's makes SeaBIOS (1.16.3+) place 64-bit BARs
+         * where the guest takes reserved-bit page faults (e.g. 0xc000000000
+         * on a 39-bit Intel core). Clamp like KVM does in host-cpu.c.
+         */
+        if (aehd_enabled() || whpx_enabled()) {
+            uint32_t eax, ebx, ecx, edx;
+
+            host_cpuid(0x80000000, 0, &eax, &ebx, &ecx, &edx);
+            if (eax >= 0x80000008) {
+                host_cpuid(0x80000008, 0, &eax, &ebx, &ecx, &edx);
+                cpu->phys_bits = MIN(cpu->phys_bits, eax & 0xff);
+            }
         }
         if (cpu->guest_phys_bits &&
             (cpu->guest_phys_bits > cpu->phys_bits ||

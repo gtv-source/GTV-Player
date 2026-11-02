@@ -1388,6 +1388,7 @@ static void qemu_setup_display(void)
 
 static void qemu_create_default_devices(void)
 {
+    return;
     MachineClass *machine_class = MACHINE_GET_CLASS(current_machine);
     const char *vc = qemu_display_get_vc(&dpy);
 
@@ -2363,8 +2364,16 @@ static void configure_accelerators(const char *progname)
             bool have_tcg = accel_find("tcg");
             bool have_kvm = accel_find("kvm");
             bool have_hvf = accel_find("hvf");
+            bool have_whpx = accel_find("whpx");
 
-            if (have_tcg && have_kvm) {
+            if (have_tcg && have_whpx) {
+                /*
+                 * Windows: try the hypervisor first and fall back to TCG
+                 * if WHPX is unavailable (Hyper-V/"Windows Hypervisor
+                 * Platform" feature off, nested virt, old CPU...).
+                 */
+                accelerators = "whpx:tcg";
+            } else if (have_tcg && have_kvm) {
                 if (g_str_has_suffix(progname, "kvm")) {
                     /* If the program name ends with "kvm", we prefer KVM */
                     accelerators = "kvm:tcg";
@@ -3736,6 +3745,16 @@ void qemu_init(int argc, char **argv)
     current_machine->cpu_type = machine_class_default_cpu_type(machine_class);
     if (cpu_option) {
         current_machine->cpu_type = parse_cpu_option(cpu_option);
+    } else if (tcg_enabled() && current_machine->cpu_type &&
+               !strcmp(current_machine->cpu_type, "qemu64-x86_64-cpu") &&
+               object_class_by_name("Nehalem-x86_64-cpu")) {
+        /*
+         * Android-x86 (Bionic/ART/SurfaceFlinger) requires SSE4.2+POPCNT,
+         * which the default qemu64 model lacks, and "-cpu max" exposes
+         * AVX/AVX2/FMA paths that are much slower than SSE under TCG.
+         * Nehalem is the fastest model that Android accepts.
+         */
+        current_machine->cpu_type = "Nehalem-x86_64-cpu";
     }
     /* NB: for machine none cpu_type could STILL be NULL here! */
 

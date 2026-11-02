@@ -1,6 +1,9 @@
 config WHPX
     bool
 
+config AEHD
+    bool
+
 config NVMM
     bool
 

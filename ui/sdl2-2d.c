@@ -27,6 +27,9 @@
 #include "ui/console.h"
 #include "ui/input.h"
 #include "ui/sdl2.h"
+#include "launcher_2d.h"
+
+static bool launcher_inited = false;
 
 void sdl2_2d_update(DisplayChangeListener *dcl,
                     int x, int y, int w, int h)
@@ -35,14 +38,18 @@ void sdl2_2d_update(DisplayChangeListener *dcl,
     DisplaySurface *surf = scon->surface;
     SDL_Rect rect;
     size_t surface_data_offset;
+
     assert(!scon->opengl);
 
-    if (!scon->texture) {
+    if (!scon->texture)
+    {
         return;
     }
 
+    // ===== UPDATE TEXTURE =====
     surface_data_offset = surface_bytes_per_pixel(surf) * x +
                           surface_stride(surf) * y;
+
     rect.x = x;
     rect.y = y;
     rect.w = w;
@@ -51,9 +58,6 @@ void sdl2_2d_update(DisplayChangeListener *dcl,
     SDL_UpdateTexture(scon->texture, &rect,
                       surface_data(surf) + surface_data_offset,
                       surface_stride(surf));
-    SDL_RenderClear(scon->real_renderer);
-    SDL_RenderCopy(scon->real_renderer, scon->texture, NULL, NULL);
-    SDL_RenderPresent(scon->real_renderer);
 }
 
 void sdl2_2d_switch(DisplayChangeListener *dcl,
@@ -61,66 +65,76 @@ void sdl2_2d_switch(DisplayChangeListener *dcl,
 {
     struct sdl2_console *scon = container_of(dcl, struct sdl2_console, dcl);
     DisplaySurface *old_surface = scon->surface;
-    int format = 0;
+    int format = SDL_PIXELFORMAT_ABGR8888;
 
     assert(!scon->opengl);
 
     scon->surface = new_surface;
 
-    if (scon->texture) {
+    if (scon->texture)
+    {
         SDL_DestroyTexture(scon->texture);
         scon->texture = NULL;
     }
 
-    if (surface_is_placeholder(new_surface) && qemu_console_get_index(dcl->con)) {
+    if (surface_is_placeholder(new_surface) && qemu_console_get_index(dcl->con))
+    {
         sdl2_window_destroy(scon);
         return;
     }
 
-    if (!scon->real_window) {
+    if (!scon->real_window)
+    {
         sdl2_window_create(scon);
-    } else if (old_surface &&
-               ((surface_width(old_surface)  != surface_width(new_surface)) ||
-                (surface_height(old_surface) != surface_height(new_surface)))) {
+    }
+    else if (old_surface &&
+             ((surface_width(old_surface) != surface_width(new_surface)) ||
+              (surface_height(old_surface) != surface_height(new_surface))))
+    {
         sdl2_window_resize(scon);
     }
 
-    SDL_RenderSetLogicalSize(scon->real_renderer,
-                             surface_width(new_surface),
-                             surface_height(new_surface));
+    SDL_RenderSetLogicalSize(scon->real_renderer, 0, 0);
+    SDL_RenderSetIntegerScale(scon->real_renderer, SDL_FALSE);
 
-    switch (surface_format(scon->surface)) {
-    case PIXMAN_x1r5g5b5:
-        format = SDL_PIXELFORMAT_ARGB1555;
-        break;
-    case PIXMAN_r5g6b5:
-        format = SDL_PIXELFORMAT_RGB565;
-        break;
-    case PIXMAN_a8r8g8b8:
-    case PIXMAN_x8r8g8b8:
-        format = SDL_PIXELFORMAT_ARGB8888;
-        break;
-    case PIXMAN_a8b8g8r8:
-    case PIXMAN_x8b8g8r8:
-        format = SDL_PIXELFORMAT_ABGR8888;
-        break;
-    case PIXMAN_r8g8b8a8:
-    case PIXMAN_r8g8b8x8:
-        format = SDL_PIXELFORMAT_RGBA8888;
-        break;
-    case PIXMAN_b8g8r8x8:
-        format = SDL_PIXELFORMAT_BGRX8888;
-        break;
-    case PIXMAN_b8g8r8a8:
-        format = SDL_PIXELFORMAT_BGRA8888;
-        break;
-    default:
-        g_assert_not_reached();
-    }
+    // switch (surface_format(scon->surface))
+    // {
+    // case PIXMAN_x1r5g5b5:
+    //     format = SDL_PIXELFORMAT_ARGB1555;
+    //     break;
+    // case PIXMAN_r5g6b5:
+    //     format = SDL_PIXELFORMAT_RGB565;
+    //     break;
+    // case PIXMAN_a8r8g8b8:
+    // case PIXMAN_x8r8g8b8:
+    //     format = SDL_PIXELFORMAT_ARGB8888;
+    //     break;
+    // case PIXMAN_a8b8g8r8:
+    // case PIXMAN_x8b8g8r8:
+    //     format = SDL_PIXELFORMAT_ABGR8888;
+    //     break;
+    // case PIXMAN_r8g8b8a8:
+    // case PIXMAN_r8g8b8x8:
+    //     format = SDL_PIXELFORMAT_RGBA8888;
+    //     break;
+    // case PIXMAN_b8g8r8x8:
+    //     format = SDL_PIXELFORMAT_BGRX8888;
+    //     break;
+    // case PIXMAN_b8g8r8a8:
+    //     format = SDL_PIXELFORMAT_BGRA8888;
+    //     break;
+    // default:
+    //     g_assert_not_reached();
+    // }
     scon->texture = SDL_CreateTexture(scon->real_renderer, format,
                                       SDL_TEXTUREACCESS_STREAMING,
                                       surface_width(new_surface),
                                       surface_height(new_surface));
+
+    SDL_UpdateTexture(scon->texture, NULL,
+                      surface_data(new_surface),
+                      surface_stride(new_surface));
+                      
     sdl2_2d_redraw(scon);
 }
 
@@ -129,7 +143,29 @@ void sdl2_2d_refresh(DisplayChangeListener *dcl)
     struct sdl2_console *scon = container_of(dcl, struct sdl2_console, dcl);
 
     assert(!scon->opengl);
+
     graphic_hw_update(dcl->con);
+
+    if (scon->real_window && scon->texture)
+    {
+        // ===== RENDER FULL FRAME =====
+        SDL_RenderClear(scon->real_renderer);
+        SDL_RenderCopy(scon->real_renderer, scon->texture, NULL, NULL);
+
+        // ===== INIT LAUNCHER =====
+        if (!launcher_inited)
+        {
+            launcher_2d_init();
+            launcher_2d_notify_framebuffer();
+            launcher_inited = true;
+        }
+
+        // ===== DRAW OVERLAY =====
+        launcher_2d_update(scon->real_renderer, scon->real_window);
+
+        SDL_RenderPresent(scon->real_renderer);
+    }
+
     sdl2_poll_events(scon);
 }
 
@@ -137,7 +173,8 @@ void sdl2_2d_redraw(struct sdl2_console *scon)
 {
     assert(!scon->opengl);
 
-    if (!scon->surface) {
+    if (!scon->surface)
+    {
         return;
     }
     sdl2_2d_update(&scon->dcl, 0, 0,

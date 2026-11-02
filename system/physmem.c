@@ -3632,6 +3632,35 @@ int qemu_ram_foreach_block(RAMBlockIterFunc func, void *opaque)
  * Returns: 0 on success, none-0 on failure
  *
  */
+#ifdef _WIN32
+/*
+ * Give the physical pages of a guest RAM range back to Windows (virtio-balloon
+ * inflate, free page reporting).  The range must stay mapped: accelerators such
+ * as WHPX keep the host addresses mapped into the guest, so VirtualFree(DECOMMIT)
+ * is not an option.
+ *
+ * MEM_RESET marks the pages as not needed (never written to the page file) and
+ * VirtualUnlock() on unlocked memory removes them from the working set, so their
+ * physical memory is freed at once.  If the guest writes such a page again it
+ * simply becomes a normal page again; nothing is lost.  Afterwards the content
+ * of a page that is not rewritten is undefined (not necessarily zero), which is
+ * what a discarded, guest-free page allows.
+ *
+ * DiscardVirtualMemory() would do the same but costs ~4 ms per call on memory
+ * mapped by WHPX, which made balloon inflation crawl at ~1 MB/s; this pair
+ * inflated 2 GB in under 10 s in the same test.
+ */
+static int qemu_win32_discard_ram(void *addr, size_t length)
+{
+    if (!VirtualAlloc(addr, length, MEM_RESET, PAGE_READWRITE)) {
+        return -EINVAL;
+    }
+    /* fails with ERROR_NOT_LOCKED by design, but trims the pages anyway */
+    VirtualUnlock(addr, length);
+    return 0;
+}
+#endif
+
 int ram_block_discard_range(RAMBlock *rb, uint64_t start, size_t length)
 {
     int ret = -1;
@@ -3724,6 +3753,14 @@ int ram_block_discard_range(RAMBlock *rb, uint64_t start, size_t length)
             }
             if (ret) {
                 ret = -errno;
+                error_report("%s: Failed to discard range "
+                             "%s:%" PRIx64 " +%zx (%d)",
+                             __func__, rb->idstr, start, length, ret);
+                goto err;
+            }
+#elif defined(_WIN32)
+            ret = qemu_win32_discard_ram(host_startaddr, length);
+            if (ret) {
                 error_report("%s: Failed to discard range "
                              "%s:%" PRIx64 " +%zx (%d)",
                              __func__, rb->idstr, start, length, ret);

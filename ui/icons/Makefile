@@ -5,9 +5,7 @@
 # 96 DPI res resulting in poor quality output.
 
 regenerate:
-	for s in 16 24 32 48 64 128 256 512; \
+	for s in 32 128; \
 	do \
-	    inkscape --without-gui --export-png=qemu_$${s}x$${s}.png \
-		--export-width=$$s --export-height=$$s qemu.svg ; \
+	    inkscape --without-gui --export-png=gtv_$${s}x$${s}.png ; \
 	done
-	convert qemu_32x32.png qemu_32x32.bmp

@@ -27,6 +27,7 @@ i386_user_ss = ss.source_set()
 
 subdir('kvm')
 subdir('whpx')
+subdir('aehd')
 subdir('nvmm')
 subdir('hvf')
 subdir('tcg')

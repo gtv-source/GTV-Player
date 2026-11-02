@@ -55,6 +55,63 @@ void os_setup_early_signal_handling(void)
     atexit(os_undo_timer_resolution);
 }
 
+/*
+ * TCG is CPU-bound and runs one host thread per vCPU.  On Windows 10/11 the
+ * scheduler classifies background-looking processes as "EcoQoS" and parks
+ * them on efficiency cores / throttles clocks, which makes a TCG guest
+ * several times slower.  Opt out of power throttling and raise priority.
+ */
+typedef struct {
+    ULONG Version;
+    ULONG ControlMask;
+    ULONG StateMask;
+} QEMUPowerThrottlingState;
+
+#define QEMU_POWER_THROTTLING_EXECUTION_SPEED 0x1
+#define QEMU_PROCESS_POWER_THROTTLING 4
+#define QEMU_THREAD_POWER_THROTTLING  5
+
+static void os_disable_throttling(bool process)
+{
+    typedef BOOL (WINAPI *SetInfoFn)(HANDLE, int, LPVOID, DWORD);
+    QEMUPowerThrottlingState st = {
+        .Version = 1,
+        .ControlMask = QEMU_POWER_THROTTLING_EXECUTION_SPEED,
+        .StateMask = 0, /* 0 = never throttle */
+    };
+    HMODULE k32 = GetModuleHandleA("kernel32.dll");
+    SetInfoFn fn;
+
+    if (!k32) {
+        return;
+    }
+    if (process) {
+        fn = (SetInfoFn)(void *)GetProcAddress(k32, "SetProcessInformation");
+        if (fn) {
+            fn(GetCurrentProcess(), QEMU_PROCESS_POWER_THROTTLING,
+               &st, sizeof(st));
+        }
+    } else {
+        fn = (SetInfoFn)(void *)GetProcAddress(k32, "SetThreadInformation");
+        if (fn) {
+            fn(GetCurrentThread(), QEMU_THREAD_POWER_THROTTLING,
+               &st, sizeof(st));
+        }
+    }
+}
+
+void os_tune_tcg_process(void)
+{
+    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+    os_disable_throttling(true);
+}
+
+void os_tune_vcpu_thread(void)
+{
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    os_disable_throttling(false);
+}
+
 void os_set_line_buffering(void)
 {
     setbuf(stdout, NULL);
