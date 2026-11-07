@@ -11,6 +11,7 @@
 #include <math.h>
 #include "stb_truetype.h"
 #include "adb.h"
+#include "gtv-perf.h"
 
 // ================= STATE =================
 static float alpha = 1.0f;
@@ -377,8 +378,27 @@ typedef struct
     GLuint tex;
     int w, h, ascent;
     float px;
-    char str[64];
+    char str[GTV_HUD_LEN];   /* also the HUD lines (ui/gtv-perf.c) */
 } TextTex;
+
+// width in pixels of str at px (font loaded)
+static float text_width(const char *str, float px)
+{
+    float scale = stbtt_ScaleForPixelHeight(&font, px);
+    float x = 0;
+    int prev = 0;
+    for (const char *s = str; *s;)
+    {
+        int cp = utf8_next(&s);
+        int adv, lsb;
+        stbtt_GetCodepointHMetrics(&font, cp, &adv, &lsb);
+        if (prev)
+            x += scale * stbtt_GetCodepointKernAdvance(&font, prev, cp);
+        x += adv * scale;
+        prev = cp;
+    }
+    return x + 2;
+}
 
 static void text_update(TextTex *t, const char *str, float px)
 {
@@ -533,6 +553,150 @@ static void draw_dot(float cx, float cy, float r, float a)
 static volatile float stage_floor = 0.0f;   // set by the adb thread
 static TextTex label_tex, pct_tex;
 
+// ================= NOTICE (GPLAYER_NOTICE, e.g. no hardware acceleration) =================
+// Shown on the loading screen and for NOTICE_GAME_MS once the game is on
+// screen. The launcher sets it (core/gPlayer.js); UTF-8 read from UTF-16,
+// getenv() would turn Vietnamese letters into '?'.
+#define NOTICE_LINES 4
+#define NOTICE_GAME_MS 12000
+static char *notice;
+static Uint32 hidden_at;    // when the loading screen was gone
+
+static const char *notice_text(void)
+{
+    static int done;
+    if (!done)
+    {
+        done = 1;
+        wchar_t buf[1024];
+        DWORD n = GetEnvironmentVariableW(L"GPLAYER_NOTICE", buf, 1024);
+        if (n > 0 && n < 1024)
+        {
+            int len = WideCharToMultiByte(CP_UTF8, 0, buf, (int)n, NULL, 0, NULL, NULL);
+            notice = calloc(len + 1, 1);
+            if (notice)
+                WideCharToMultiByte(CP_UTF8, 0, buf, (int)n, notice, len, NULL, NULL);
+        }
+    }
+    return notice && notice[0] ? notice : NULL;
+}
+
+/*
+ * The notice, word-wrapped to max_w, in a dark panel whose top is at y,
+ * centred. Line textures are made again only when the text or size changes.
+ */
+static void draw_notice(float w, float y, float px, float a)
+{
+    static TextTex tex[NOTICE_LINES];
+    const char *txt = notice_text();
+    char lines[NOTICE_LINES][GTV_HUD_LEN];
+    int n = 0;
+
+    font_load();
+    if (!txt || !font_ok || a <= 0)
+        return;
+
+    // wrap on spaces (and on '\n' from the launcher)
+    float max_w = w * 0.88f;
+    const char *s = txt;
+    while (*s && n < NOTICE_LINES)
+    {
+        char cur[GTV_HUD_LEN] = "";
+        while (*s == ' ')
+            s++;
+        for (;;)
+        {
+            const char *e = s;
+            while (*e && *e != ' ' && *e != '\n')
+                e++;
+            char next[GTV_HUD_LEN];
+            snprintf(next, sizeof(next), "%s%s%.*s", cur, cur[0] ? " " : "", (int)(e - s), s);
+            if (cur[0] && text_width(next, px) > max_w)
+                break;      // the word starts the next line
+            snprintf(cur, sizeof(cur), "%s", next);
+            s = e;
+            if (*s == '\n')
+            {
+                s++;
+                break;
+            }
+            if (!*s)
+                break;
+            s++;
+        }
+        snprintf(lines[n++], GTV_HUD_LEN, "%s", cur);
+    }
+
+    float line_h = roundf(px * 1.3f), box_w = 0;
+    for (int i = 0; i < n; i++)
+    {
+        text_update(&tex[i], lines[i], px);
+        if (tex[i].w > box_w)
+            box_w = tex[i].w;
+    }
+    float pad = roundf(px * 0.6f);
+    float x0 = roundf((w - box_w) * 0.5f);
+
+    glColor4f(0.25f, 0.05f, 0.02f, 0.78f * a);
+    glBegin(GL_QUADS);
+    glVertex2f(x0 - pad, y);
+    glVertex2f(x0 + box_w + pad, y);
+    glVertex2f(x0 + box_w + pad, y + n * line_h + 2 * pad);
+    glVertex2f(x0 - pad, y + n * line_h + 2 * pad);
+    glEnd();
+    for (int i = 0; i < n; i++)
+    {
+        text_draw(&tex[i], roundf((w - tex[i].w) * 0.5f), y + pad + i * line_h + tex[i].ascent,
+                  1.0f, 0.85f, 0.30f, a);
+    }
+}
+
+static float notice_px(int w, int h)
+{
+    return w >= h ? fminf(fmaxf(h * 0.030f, 16.0f), 30.0f)
+                  : fminf(fmaxf(w * 0.036f, 14.0f), 24.0f);
+}
+
+/*
+ * 1 while the banner is on screen, and a little after so the frame without
+ * it is drawn: the guest may send no frames (black loading screen), then the
+ * window must be redrawn for the banner to fade and go.
+ */
+int launcher_gl_notice_pending(void)
+{
+    return notice_text() && hidden_at &&
+           SDL_GetTicks() - hidden_at < NOTICE_GAME_MS + 1500;
+}
+
+/* over the game, after the loading screen, for NOTICE_GAME_MS */
+void launcher_gl_draw_notice(SDL_Window *window)
+{
+    int w, h;
+
+    if (!notice_text() || !hidden_at)
+        return;
+    Uint32 since = SDL_GetTicks() - hidden_at;
+    if (since > NOTICE_GAME_MS)
+        return;
+    float a = since > NOTICE_GAME_MS - 1000 ? (NOTICE_GAME_MS - since) / 1000.0f : 1.0f;
+
+    SDL_GL_GetDrawableSize(window, &w, &h);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glViewport(0, 0, w, h);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0, w, h, 0, -1, 1);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    draw_notice(w, roundf(h * 0.04f), notice_px(w, h), a);
+}
+
 void launcher_gl_init(int w, int h)
 {
     fprintf(stderr, "[LAUNCHER] init: w=%d h=%d\n", w, h);
@@ -607,6 +771,7 @@ void launcher_gl_update(SDL_Window *window)
         if (alpha <= 0.0f)
         {
             alpha = 0.0f;
+            hidden_at = now ? now : 1;
             fprintf(stderr, "[LAUNCHER] HIDDEN\n");
         }
     }
@@ -676,6 +841,9 @@ void launcher_gl_render_progress(SDL_Window *window)
         }
     }
     text_draw(&pct_tex, bar_x + bar_w - pct_tex.w + 1, base, 1.0f, 0.75f, 0.75f, alpha);
+
+    // ===== NOTICE (e.g. no hardware acceleration), top of the screen =====
+    draw_notice(w, roundf(h * 0.05f), notice_px(w, h), alpha);
 
     // ===== BAR =====
     static const float track[3] = { 1, 1, 1 };
@@ -788,4 +956,68 @@ void launcher_gl_notify_boot_complete(void)
 {
     boot_done = 1;
     fprintf(stderr, "[LAUNCHER] BOOT COMPLETE\n");
+}
+
+// ================= PERFORMANCE HUD (Ctrl+Shift+F, ui/gtv-perf.c) =================
+// Drawn over the game frame just before the swap; the text is rasterised
+// again only when it changes (once a second).
+void launcher_gl_draw_hud(SDL_Window *window)
+{
+    static TextTex lines_tex[GTV_HUD_LINES];
+    static const float col[3][3] = {
+        { 1.00f, 1.00f, 1.00f },    // normal
+        { 1.00f, 0.82f, 0.25f },    // warning
+        { 1.00f, 0.35f, 0.30f },    // bad
+    };
+    char lines[GTV_HUD_LINES][GTV_HUD_LEN];
+    int colors[GTV_HUD_LINES];
+    int n = gtv_perf_hud_text(lines, colors);
+    int w, h;
+
+    font_load();
+    if (!n || !font_ok)
+        return;
+
+    SDL_GL_GetDrawableSize(window, &w, &h);
+    float px = fminf(fmaxf((w < h ? w : h) * 0.026f, 13.0f), 20.0f);
+    float line_h = roundf(px * 1.3f);
+    float x = roundf(px * 0.6f), y = roundf(px * 0.6f);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glViewport(0, 0, w, h);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0, w, h, 0, -1, 1);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+
+    float box_w = 0;
+    for (int i = 0; i < n; i++)
+    {
+        text_update(&lines_tex[i], lines[i], px);
+        if (lines_tex[i].w > box_w)
+            box_w = lines_tex[i].w;
+    }
+
+    // translucent panel
+    float pad = roundf(px * 0.5f);
+    glColor4f(0, 0, 0, 0.55f);
+    glBegin(GL_QUADS);
+    glVertex2f(x - pad, y - pad);
+    glVertex2f(x + box_w + pad, y - pad);
+    glVertex2f(x + box_w + pad, y + n * line_h + pad);
+    glVertex2f(x - pad, y + n * line_h + pad);
+    glEnd();
+
+    for (int i = 0; i < n; i++)
+    {
+        const float *c = col[colors[i] < 0 || colors[i] > 2 ? 0 : colors[i]];
+        text_draw(&lines_tex[i], x, y + i * line_h + lines_tex[i].ascent, c[0], c[1], c[2], 1.0f);
+    }
 }

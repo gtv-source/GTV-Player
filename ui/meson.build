@@ -22,6 +22,10 @@ system_ss.add(files(
   'launcher_gl.c',
   'stb_image_impl.c',
   'adb.c',
+  'gtv-clipboard.c',
+  'gtv-perf.c',
+  'gtv-adbguard.c',
+  'gtv-ux.c',
 ))
 system_ss.add(when: pixman, if_true: files('console-vc.c'), if_false: files('console-vc-stubs.c'))
 if dbus_display

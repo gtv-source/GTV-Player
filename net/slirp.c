@@ -42,6 +42,7 @@
 #include "chardev/char-fe.h"
 #include "sysemu/sysemu.h"
 #include "qemu/cutils.h"
+#include "qemu/main-loop.h"
 #include "qapi/error.h"
 #include "qapi/qmp/qdict.h"
 #include "util.h"
@@ -113,6 +114,11 @@ static void slirp_smb_cleanup(SlirpState *s);
 static inline void slirp_smb_cleanup(SlirpState *s) { }
 #endif
 
+/* G-Player: network bytes for the performance HUD (ui/gtv-perf.c) */
+void gtv_perf_net(unsigned rx, unsigned tx);
+/* G-Player: close the adb hostfwd (called from ui/adb.c) */
+void gtv_slirp_remove_hostfwd(int port);
+
 static ssize_t net_slirp_send_packet(const void *pkt, size_t pkt_len,
                                      void *opaque)
 {
@@ -127,6 +133,7 @@ static ssize_t net_slirp_send_packet(const void *pkt, size_t pkt_len,
         }
     }
 
+    gtv_perf_net((unsigned)pkt_len, 0);
     return qemu_send_packet(&s->nc, pkt, pkt_len);
 }
 
@@ -134,6 +141,7 @@ static ssize_t net_slirp_receive(NetClientState *nc, const uint8_t *buf, size_t 
 {
     SlirpState *s = DO_UPCAST(SlirpState, nc, nc);
 
+    gtv_perf_net(0, (unsigned)size);
     slirp_input(s->slirp, buf, size);
 
     return size;
@@ -791,6 +799,45 @@ void hmp_hostfwd_remove(Monitor *mon, const QDict *qdict)
 
  fail_syntax:
     monitor_printf(mon, "invalid format\n");
+}
+
+/*
+ * G-Player: close the host side of the adb forwarding (tcp 127.0.0.1:port)
+ * once G-Player no longer needs adb, so nothing on the host can reach the
+ * guest's adbd while the game runs.  Callable from any thread: slirp is only
+ * touched in a bottom half on the main loop.
+ */
+static void gtv_remove_fwd_bh(void *opaque)
+{
+    int port = (int)(intptr_t)opaque;
+    struct sockaddr_in host_addr = {
+        .sin_family = AF_INET,
+        .sin_addr = { .s_addr = htonl(INADDR_LOOPBACK) },
+        .sin_port = htons(port),
+    };
+    SlirpState *s;
+    int err = -1;
+
+    QTAILQ_FOREACH(s, &slirp_stacks, entry) {
+#if SLIRP_CHECK_VERSION(4, 5, 0)
+        if (slirp_remove_hostxfwd(s->slirp, (struct sockaddr *)&host_addr,
+                                  sizeof(host_addr), 0) == 0) {
+            err = 0;
+        }
+#else
+        if (slirp_remove_hostfwd(s->slirp, 0, host_addr.sin_addr, port) == 0) {
+            err = 0;
+        }
+#endif
+    }
+    printf("[ADB] adb port %d %s\n", port, err ? "not found (already closed?)" : "closed");
+    fflush(stdout);
+}
+
+void gtv_slirp_remove_hostfwd(int port)
+{
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), gtv_remove_fwd_bh,
+                            (void *)(intptr_t)port);
 }
 
 static int slirp_hostfwd(SlirpState *s, const char *redir_str, Error **errp)

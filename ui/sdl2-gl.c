@@ -30,6 +30,7 @@
 #include "ui/input.h"
 #include "ui/sdl2.h"
 #include "launcher_gl.h"
+#include "gtv-perf.h"
 
 static int frame_count = 0;
 
@@ -214,6 +215,24 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
         scon->updates = 0;
         sdl2_gl_render_surface(scon);
     }
+
+    /*
+     * HUD on while the guest sends no frames (game frozen, still menu): draw
+     * the last frame again twice a second so the numbers keep moving.
+     */
+    /* same for the no-acceleration banner, so it fades out on time */
+    int notice = launcher_gl_notice_pending();
+    if ((gtv_perf_hud_visible() || notice) && scon->scanout_mode && scon->real_window &&
+        gtv_perf_ms_since_frame() > (notice ? 100 : 500))
+    {
+        static gint64 last_redraw;
+        gint64 now = g_get_monotonic_time();
+        if (now - last_redraw > (notice ? 100000 : 500000))
+        {
+            last_redraw = now;
+            sdl2_gl_scanout_flush(dcl, 0, 0, 0, 0);
+        }
+    }
     sdl2_poll_events(scon);
 }
 
@@ -343,10 +362,32 @@ void sdl2_gl_scanout_flush(DisplayChangeListener *dcl,
 
     SDL_GL_MakeCurrent(scon->real_window, scon->winctx);
 
+    /* a real guest frame has a damaged area; redraws pass 0,0,0,0 */
+    if (w || h)
+    {
+        static bool gl_logged;
+        if (!gl_logged)
+        {
+            gl_logged = true;
+            gtv_perf_gl_info((const char *)glGetString(GL_RENDERER),
+                             (const char *)glGetString(GL_VENDOR),
+                             (const char *)glGetString(GL_VERSION));
+        }
+        gtv_perf_frame();
+    }
+
     SDL_GetWindowSize(scon->real_window, &ww, &wh);
     egl_fb_setup_default(&scon->win_fb, ww, wh);
     egl_fb_blit(&scon->win_fb, &scon->guest_fb, !scon->y0_top);
 
     launcher_gl_update(scon->real_window);
+    launcher_gl_draw_notice(scon->real_window);
+    if (gtv_perf_hud_visible())
+    {
+        launcher_gl_draw_hud(scon->real_window);
+    }
+
+    gint64 t0 = g_get_monotonic_time();
     SDL_GL_SwapWindow(scon->real_window);
+    gtv_perf_swap_us((unsigned)(g_get_monotonic_time() - t0));
 }

@@ -24,6 +24,9 @@
 
 #include <virglrenderer.h>
 
+/* G-Player: time spent per guest GPU command, for lag diagnosis (ui/gtv-perf.c) */
+void gtv_perf_gpu_cmd(unsigned type, unsigned us);
+
 struct virtio_gpu_virgl_resource {
     struct virtio_gpu_simple_resource base;
     MemoryRegion *mr;
@@ -872,9 +875,11 @@ void virtio_gpu_virgl_process_cmd(VirtIOGPU *g,
                                       struct virtio_gpu_ctrl_command *cmd)
 {
     bool cmd_suspended = false;
+    int64_t gtv_t0;
 
     VIRTIO_GPU_FILL_CMD(cmd->cmd_hdr);
 
+    gtv_t0 = g_get_monotonic_time();
     virgl_renderer_force_ctx_0();
     switch (cmd->cmd_hdr.type) {
     case VIRTIO_GPU_CMD_CTX_CREATE:
@@ -954,6 +959,7 @@ void virtio_gpu_virgl_process_cmd(VirtIOGPU *g,
         cmd->error = VIRTIO_GPU_RESP_ERR_UNSPEC;
         break;
     }
+    gtv_perf_gpu_cmd(cmd->cmd_hdr.type, (unsigned)(g_get_monotonic_time() - gtv_t0));
 
     if (cmd_suspended || cmd->finished) {
         return;

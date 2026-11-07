@@ -39,6 +39,11 @@
 #include "qemu/log.h"
 #include "launcher_gl.h"
 #include "adb.h"
+#include "gtv-clipboard.h"
+#include "gtv-perf.h"
+#include "gtv-ux.h"
+#include "hw/boards.h"
+#include "qemu/accel.h"
 #include "stb_image.h"
 
 static int sdl2_num_outputs;
@@ -128,6 +133,10 @@ void sdl2_window_create(struct sdl2_console *scon)
                                          w,
                                          h,
                                          flags);
+
+    /* start-up timing: the launcher logs when this line arrives */
+    printf("[SDL] window shown %dx%d\n", w, h);
+    fflush(stdout);
 
     SDL_RaiseWindow(scon->real_window);
 
@@ -307,10 +316,26 @@ static void sdl_update_caption(struct sdl2_console *scon)
     }
 }
 
+/*
+ * The guest input is a touchscreen, which Android draws no pointer for, and
+ * xtmapper does not draw one either: show the Windows pointer over the guest
+ * whenever the mouse is in absolute (touch) mode, portrait or landscape.
+ */
+static bool sdl_host_pointer(struct sdl2_console *scon)
+{
+    return qemu_input_is_absolute(scon->dcl.con);
+}
+
 static void sdl_hide_cursor(struct sdl2_console *scon)
 {
     if (scon->opts->has_show_cursor && scon->opts->show_cursor)
     {
+        return;
+    }
+    if (sdl_host_pointer(scon))
+    {
+        SDL_SetCursor(sdl_cursor_normal);
+        SDL_ShowCursor(SDL_ENABLE);
         return;
     }
 
@@ -345,7 +370,7 @@ static void sdl_show_cursor(struct sdl2_console *scon)
         SDL_SetCursor(sdl_cursor_normal);
     }
 
-    SDL_ShowCursor(SDL_DISABLE);
+    SDL_ShowCursor(sdl_host_pointer(scon) ? SDL_ENABLE : SDL_DISABLE);
 }
 
 static void sdl_grab_start(struct sdl2_console *scon)
@@ -530,6 +555,17 @@ static void handle_keydown(SDL_Event *ev)
 
     scon->gui_keysym = false;
 
+    /* Ctrl+Shift+F: performance HUD on/off, never sent to the game */
+    if ((ev->key.keysym.mod & KMOD_CTRL) && (ev->key.keysym.mod & KMOD_SHIFT) &&
+        ev->key.keysym.sym == SDLK_f)
+    {
+        if (!ev->key.repeat)
+        {
+            gtv_perf_hud_toggle();
+        }
+        return;
+    }
+
     if ((ev->key.keysym.mod & KMOD_SHIFT) &&
         (ev->key.keysym.mod & KMOD_GUI) &&
         ev->key.keysym.sym == SDLK_s)
@@ -642,6 +678,12 @@ static void handle_keyup(SDL_Event *ev)
     }
 
     scon->ignore_hotkeys = false;
+    /* the HUD hotkey's F: its key down never reached the guest either */
+    if ((ev->key.keysym.mod & KMOD_CTRL) && (ev->key.keysym.mod & KMOD_SHIFT) &&
+        ev->key.keysym.sym == SDLK_f)
+    {
+        return;
+    }
     sdl2_process_key(scon, &ev->key);
 }
 
@@ -977,6 +1019,29 @@ static void handle_windowevent(SDL_Event *ev)
     }
 }
 
+/* host clipboard text -> guest (ui/gtv-clipboard.c); SDL's thread only */
+static void sdl_clip_send(void)
+{
+    if (!SDL_HasClipboardText())
+    {
+        return;
+    }
+    char *t = SDL_GetClipboardText();
+    if (t)
+    {
+        gtv_clip_host_text(t);
+        SDL_free(t);
+    }
+}
+
+static void sdl2_perf_tick(void *opaque)
+{
+    QEMUTimer **t = opaque;
+
+    gtv_perf_mainloop_tick();
+    timer_mod(*t, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + GTV_TICK_MS);
+}
+
 void sdl2_poll_events(struct sdl2_console *scon)
 {
     SDL_Event ev1, *ev = &ev1;
@@ -989,12 +1054,49 @@ void sdl2_poll_events(struct sdl2_console *scon)
         sdl_update_caption(scon);
     }
 
+    /*
+     * host -> Android clipboard, including what was copied before the game
+     * started.  SDL only reports clipboard changes in some cases (e.g. when
+     * the window gets the focus), so watch Windows' clipboard sequence number
+     * (a cheap counter) on every refresh as well.
+     */
+    static bool clip_started;
+    static DWORD clip_seq;
+    if (!clip_started)
+    {
+        clip_started = true;
+        gtv_clip_start();
+        /* performance HUD (Ctrl+Shift+F) and [PERF] log lines */
+        gtv_perf_start(current_accel_name(),
+                       current_machine ? (int)current_machine->smp.cpus : 0,
+                       current_machine ? (int)(current_machine->ram_size >> 20) : 0);
+        /* user-activity log ([UX] lines, ui/gtv-ux.c) */
+        gtv_ux_start();
+        /* main loop heartbeat: a late tick means the loop was held */
+        static QEMUTimer *tick;
+        tick = timer_new_ms(QEMU_CLOCK_REALTIME, sdl2_perf_tick, &tick);
+        timer_mod(tick, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + GTV_TICK_MS);
+    }
+    DWORD seq = GetClipboardSequenceNumber();
+    if (seq != clip_seq)
+    {
+        clip_seq = seq;
+        sdl_clip_send();
+    }
+
     while (SDL_PollEvent(ev))
     {
         switch (ev->type)
         {
+        case SDL_CLIPBOARDUPDATE:
+            sdl_clip_send();
+            break;
         case SDL_KEYDOWN:
             idle = 0;
+            if (!ev->key.repeat)
+            {
+                gtv_ux_input(1);        /* user-activity log: counts only */
+            }
             handle_keydown(ev);
             break;
         case SDL_KEYUP:
@@ -1006,6 +1108,7 @@ void sdl2_poll_events(struct sdl2_console *scon)
             handle_textinput(ev);
             break;
         case SDL_QUIT:
+            gtv_ux_end("window_closed");
             adb_stop();
             if (scon->opts->has_window_close && !scon->opts->window_close)
             {
@@ -1024,6 +1127,10 @@ void sdl2_poll_events(struct sdl2_console *scon)
         case SDL_MOUSEBUTTONDOWN:
         case SDL_MOUSEBUTTONUP:
             idle = 0;
+            if (ev->type == SDL_MOUSEBUTTONDOWN)
+            {
+                gtv_ux_input(0);        /* user-activity log: counts only */
+            }
             handle_mousebutton(ev);
             break;
         case SDL_MOUSEWHEEL:
