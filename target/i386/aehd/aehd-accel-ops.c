@@ -33,6 +33,9 @@ static void *aehd_cpu_thread_fn(void *arg)
         exit(1);
     }
 
+    /* no EcoQoS / E-core parking for the vCPU thread (os-win32.c) */
+    os_tune_vcpu_thread();
+
     cpu_thread_signal_created(cpu);
     qemu_guest_random_seed_thread_part2(cpu->random_seed);
 

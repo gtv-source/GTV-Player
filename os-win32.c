@@ -41,6 +41,7 @@ static BOOL WINAPI qemu_ctrl_handler(DWORD type)
 }
 
 static TIMECAPS mm_tc;
+static void os_tune_process(void);
 
 static void os_undo_timer_resolution(void)
 {
@@ -53,6 +54,7 @@ void os_setup_early_signal_handling(void)
     timeGetDevCaps(&mm_tc, sizeof(mm_tc));
     timeBeginPeriod(mm_tc.wPeriodMin);
     atexit(os_undo_timer_resolution);
+    os_tune_process();
 }
 
 /*
@@ -68,36 +70,49 @@ typedef struct {
 } QEMUPowerThrottlingState;
 
 #define QEMU_POWER_THROTTLING_EXECUTION_SPEED 0x1
+/* process only: honour timeBeginPeriod() even when Windows 11 thinks the
+ * process is in the background (window occluded, not focused) */
+#define QEMU_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION 0x4
 #define QEMU_PROCESS_POWER_THROTTLING 4
 #define QEMU_THREAD_POWER_THROTTLING  5
 
-static void os_disable_throttling(bool process)
+static bool os_disable_throttling(bool process)
 {
     typedef BOOL (WINAPI *SetInfoFn)(HANDLE, int, LPVOID, DWORD);
     QEMUPowerThrottlingState st = {
         .Version = 1,
-        .ControlMask = QEMU_POWER_THROTTLING_EXECUTION_SPEED,
+        .ControlMask = QEMU_POWER_THROTTLING_EXECUTION_SPEED |
+                       (process ? QEMU_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION : 0),
         .StateMask = 0, /* 0 = never throttle */
     };
     HMODULE k32 = GetModuleHandleA("kernel32.dll");
     SetInfoFn fn;
 
     if (!k32) {
-        return;
+        return false;
     }
     if (process) {
         fn = (SetInfoFn)(void *)GetProcAddress(k32, "SetProcessInformation");
-        if (fn) {
-            fn(GetCurrentProcess(), QEMU_PROCESS_POWER_THROTTLING,
-               &st, sizeof(st));
-        }
-    } else {
-        fn = (SetInfoFn)(void *)GetProcAddress(k32, "SetThreadInformation");
-        if (fn) {
-            fn(GetCurrentThread(), QEMU_THREAD_POWER_THROTTLING,
-               &st, sizeof(st));
-        }
+        return fn && fn(GetCurrentProcess(), QEMU_PROCESS_POWER_THROTTLING,
+                        &st, sizeof(st));
     }
+    fn = (SetInfoFn)(void *)GetProcAddress(k32, "SetThreadInformation");
+    return fn && fn(GetCurrentThread(), QEMU_THREAD_POWER_THROTTLING,
+                    &st, sizeof(st));
+}
+
+/*
+ * Every accelerator: Windows' EcoQoS ("Efficiency mode") also hits WHPX/AEHD
+ * guests on hybrid CPUs (12th gen+): vCPU threads land on E-cores at low
+ * clocks and timers are coalesced, so the guest stalls ~1 s at a time while
+ * the host looks idle (G-Player test machine i7-12700F, 10/11/2026).  Opting
+ * out here does not depend on the player's power settings.
+ */
+bool os_win32_throttling_off;      /* logged by ui/gtv-perf.c */
+
+static void os_tune_process(void)
+{
+    os_win32_throttling_off = os_disable_throttling(true);
 }
 
 void os_tune_tcg_process(void)

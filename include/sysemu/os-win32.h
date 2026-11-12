@@ -105,6 +105,8 @@ void os_set_line_buffering(void);
 void os_setup_early_signal_handling(void);
 void os_tune_tcg_process(void);
 void os_tune_vcpu_thread(void);
+/* EcoQoS / timer-resolution throttling turned off for this process */
+extern bool os_win32_throttling_off;
 
 int getpagesize(void);
 

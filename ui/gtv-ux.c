@@ -176,6 +176,10 @@ void gtv_ux_line(const char *line)
         n_crash++;
         short_name(text, name, sizeof(name));
         emit("crash class=%s screen=%s", name, screen);
+    } else if (!strcmp(kind, "KILL")) {
+        /* the system killed the game (GtvClip: am_kill, reason class only) */
+        short_name(text, name, sizeof(name));
+        emit("killed reason=%s screen=%s", name, screen);
     }
     LeaveCriticalSection(&lock);
 }

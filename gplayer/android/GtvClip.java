@@ -256,7 +256,13 @@ public final class GtvClip {
      *                                   SDK_CLIENT_LOGIN_START, ...)
      *   UX <epoch ms> VTC <label>       label of a VTC login SDK line (mytag:
      *                                   "RegisterTime Start", ...)
-     *   UX <epoch ms> CRASH <class>     the game died: exception class only
+     *   UX <epoch ms> CRASH <class>     the game died: exception class only,
+     *                                   or native_SIGxxx (native crash)
+     *   UX <epoch ms> KILL <reason>     the game process died without a crash
+     *                                   line: died_<state> (ActivityManager
+     *                                   "has died: fg|vis|bg|cch ..."), or with
+     *                                   the events buffer, am_kill's reason
+     *                                   class: anr / low_memory / stopped ...
      * Only names: never field contents, payloads, typed text or values (a
      * mytag line keeps the words before ':' and one allowed word after it).
      * logcat replays the buffers from boot, so events from before GtvClip
@@ -277,6 +283,35 @@ public final class GtvClip {
     private static final java.util.regex.Pattern FOCUS =
         java.util.regex.Pattern.compile("Focus entering \\S+ (.+?) \\((server|client)\\)");
 
+    private static final java.util.regex.Pattern FATAL_SIGNAL =
+        java.util.regex.Pattern.compile("^Fatal signal \\d+ \\((SIG[A-Z]+)\\)");
+
+    private static final java.util.regex.Pattern SIGNAL_PROC =
+        java.util.regex.Pattern.compile("pid \\d+ \\(([^)]+)\\)\\s*$");
+    private static final java.util.regex.Pattern DIED_STATE =
+        java.util.regex.Pattern.compile("has died: ([a-z]+)");
+    private static final java.util.regex.Pattern KILLING =
+        java.util.regex.Pattern.compile("^Killing \\d+:([^/\\s]+)/\\S+ \\(adj (-?\\d+)\\): (.*)$");
+    private static volatile long lastDeath;     /* last crash/death of the game sent */
+
+    /* name of a crashed process: the package, or its last 15 characters
+     * (kernel process name) */
+    private static boolean isGame(String pkg, String name) {
+        return pkg != null && (name.equals(pkg) || (name.length() >= 15 && pkg.endsWith(name)));
+    }
+
+    /* reason text of an am_kill line -> one word (no package names or paths) */
+    private static String killReason(String msg) {
+        String r = msg.toLowerCase(java.util.Locale.ROOT);
+        if (r.contains("anr") || r.contains("after error")) return "anr";
+        if (r.contains("crash")) return "crash";
+        if (r.contains("lmk") || r.contains("low mem") || r.contains("lowmem")) return "low_memory";
+        if (r.contains("excessive")) return "excessive_cpu";
+        if (r.contains("stop") || r.contains("force")) return "stopped";
+        if (r.contains("empty") || r.contains("cached") || r.contains("too many")) return "cached";
+        return "other";
+    }
+
     private static void ux(long ms, String kind, String text) {
         /* names stay in UTF-8 (dialog titles like "Thông báo"); only control
          * characters go. QEMU reads at most ~190 bytes of text. */
@@ -296,8 +331,9 @@ public final class GtvClip {
                 for (;;) {
                     try {
                         Process p = new ProcessBuilder("logcat", "-v", "epoch",
-                            "-b", "main,events,crash",
-                            "-s", "input_focus:I", "DHLogger:D", "mytag:D", "AndroidRuntime:E")
+                            "-b", "main,system,events,crash",
+                            "-s", "input_focus:I", "DHLogger:D", "mytag:D", "AndroidRuntime:E",
+                            "libc:F", "ActivityManager:I", "am_kill:I")
                             .redirectErrorStream(true).start();
                         BufferedReader r = new BufferedReader(
                             new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8));
@@ -341,6 +377,48 @@ public final class GtvClip {
                                     int c = msg.indexOf(':');
                                     ux(ms, "CRASH", (c > 0 ? msg.substring(0, c) : msg).trim());
                                     crash = 0;
+                                }
+                            } else if (tag.equals("libc")) {
+                                /* native crash: "Fatal signal 11 (SIGSEGV), code 2 ...,
+                                 * pid 2854 (ng.rpg.afk.idle)": the process name is the
+                                 * kernel's, cut to the package's last 15 characters.
+                                 * Only the signal name is kept. */
+                                java.util.regex.Matcher f = FATAL_SIGNAL.matcher(msg);
+                                java.util.regex.Matcher n = SIGNAL_PROC.matcher(msg);
+                                if (f.find() && n.find() && isGame(pkg, n.group(1))) {
+                                    lastDeath = ms;
+                                    ux(ms, "CRASH", "native_" + f.group(1));
+                                }
+                            } else if (tag.equals("ActivityManager")) {
+                                /* "Process <pkg> (pid N) has died: fg  TOP": any death
+                                 * of the game; skipped right after a crash already sent */
+                                java.util.regex.Matcher k = KILLING.matcher(msg);
+                                if (pkg != null && k.find() && k.group(1).equals(pkg)) {
+                                    /* "Killing 1234:<pkg>/u0a90 (adj 0): <reason>": the
+                                     * system kills it (ANR "Close app", force-stop,
+                                     * low memory); reason class only. adj >= 900:
+                                     * a cached process in the background (e.g. G-Player's
+                                     * own "kill all background" at boot), not the game
+                                     * the player sees. */
+                                    lastDeath = ms;
+                                    if (Integer.parseInt(k.group(2)) < 900) {
+                                        ux(ms, "KILL", killReason(k.group(3)));
+                                    }
+                                } else if (pkg != null && msg.startsWith("Process " + pkg + " (pid ")
+                                    && msg.contains(" has died")) {
+                                    if (ms - lastDeath > 10000) {
+                                        java.util.regex.Matcher d = DIED_STATE.matcher(msg);
+                                        ux(ms, "KILL", "died_" + (d.find() ? d.group(1) : "other"));
+                                    }
+                                    lastDeath = ms;
+                                }
+                            } else if (tag.equals("am_kill")) {
+                                /* the system killed a process (images with the events
+                                 * buffer): "[user,pid,process,adj,reason]"; only a
+                                 * reason class is kept, never the text */
+                                if (pkg != null && msg.contains("," + pkg + ",")) {
+                                    lastDeath = ms;
+                                    ux(ms, "KILL", killReason(msg));
                                 }
                             }
                         }

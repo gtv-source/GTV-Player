@@ -26,7 +26,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include "gtv-perf.h"
+
+/* os-win32.c (sysemu/os-win32.h; this file does not use qemu/osdep.h) */
+extern bool os_win32_throttling_off;
 
 #define SAMPLE_MS 1000
 #define LOG_EVERY 5             /* samples per [PERF] line */
@@ -842,7 +846,9 @@ void gtv_perf_start(const char *accel, int vcpus, int ram_mb)
     if (t) {
         CloseHandle(t);
     }
-    printf("[PERF] started (%s), HUD %s (Ctrl+Shift+F)%s\n", vm_info, hud_on ? "on" : "off",
+    printf("[PERF] started (%s), HUD %s (Ctrl+Shift+F), power throttling %s%s\n",
+           vm_info, hud_on ? "on" : "off",
+           os_win32_throttling_off ? "off" : "NOT changed",
            accel && !strcmp(accel, "tcg")
            ? " SLOW: no hardware acceleration (TCG software emulation)" : "");
     fflush(stdout);
