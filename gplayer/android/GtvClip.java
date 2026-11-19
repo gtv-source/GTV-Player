@@ -256,6 +256,16 @@ public final class GtvClip {
      *                                   SDK_CLIENT_LOGIN_START, ...)
      *   UX <epoch ms> VTC <label>       label of a VTC login SDK line (mytag:
      *                                   "RegisterTime Start", ...)
+     *   UX <epoch ms> GS <name>         Gihot/Gosu + MYG SDK (Ngạo Kiếm Vô Song):
+     *                                   GosuSdkProxy "SDK Request ShowLogin" ->
+     *                                   ShowLogin; "<event> : <json>" sent to the
+     *                                   game -> <event>_SUCCESS, or <event>_FAIL_c<N>
+     *                                   when the json is an SdkResult with
+     *                                   "mStatus":N, N != 1 (1 = CODE_SUCCESS);
+     *                                   "<milestone>: ..." -> <milestone>
+     *                                   (Start_hotupdate, user_lv1, Done_NRU);
+     *                                   Unity (D) "Call <name>" -> <name>
+     *                                   (ITS_tracking_login / _enterGame ...)
      *   UX <epoch ms> CRASH <class>     the game died: exception class only,
      *                                   or native_SIGxxx (native crash)
      *   UX <epoch ms> KILL <reason>     the game process died without a crash
@@ -264,7 +274,9 @@ public final class GtvClip {
      *                                   the events buffer, am_kill's reason
      *                                   class: anr / low_memory / stopped ...
      * Only names: never field contents, payloads, typed text or values (a
-     * mytag line keeps the words before ':' and one allowed word after it).
+     * mytag line keeps the words before ':' and one allowed word after it; a
+     * GosuSdkProxy json, which holds the user session, is dropped: only its
+     * event name and the numeric mStatus of a failure are kept).
      * logcat replays the buffers from boot, so events from before GtvClip
      * started (game splash/loading) are sent too; lines wait in a queue while
      * QEMU is not connected.
@@ -280,6 +292,20 @@ public final class GtvClip {
     private static final java.util.Set<String> VTC_WORDS = new java.util.HashSet<String>(
         java.util.Arrays.asList("Start", "End", "Success", "Succeed", "Fail", "Failed",
                                 "Error", "Cancel", "Done", "OK", "Begin", "Finish"));
+    /* Gihot/Gosu SDK (com.gihot.radteamsdk.main.GosuSdkProxy.SendDataToUnity):
+     * "<SdkEvent value> : <gson json>", e.g. "onAuth : {...}" */
+    private static final java.util.regex.Pattern GS_EVENT =
+        java.util.regex.Pattern.compile("^([A-Za-z][A-Za-z0-9_]{1,40}) : (.*)$");
+    private static final java.util.regex.Pattern GS_STATUS =
+        java.util.regex.Pattern.compile("\"mStatus\"\\s*:\\s*(-?\\d{1,6})");
+    /* GosuSdkProxy tracking milestones "<name>: <json or empty>" (no space before
+     * ':'): Start_hotupdate, Completed_hotupdate, user_lv1, Done_NRU. Lines named
+     * ITS_tracking_* are the SDK's tracking-error callbacks: skipped. */
+    private static final java.util.regex.Pattern GS_TRACK =
+        java.util.regex.Pattern.compile("^([A-Za-z][A-Za-z0-9_]{1,40}):( |$)");
+    /* GihotSDKProxy Logger (tag Unity, debug): "Call <method>", no arguments */
+    private static final java.util.regex.Pattern GS_CALL =
+        java.util.regex.Pattern.compile("^Call ([A-Za-z][A-Za-z0-9_]{1,48})$");
     private static final java.util.regex.Pattern FOCUS =
         java.util.regex.Pattern.compile("Focus entering \\S+ (.+?) \\((server|client)\\)");
 
@@ -333,6 +359,7 @@ public final class GtvClip {
                         Process p = new ProcessBuilder("logcat", "-v", "epoch",
                             "-b", "main,system,events,crash",
                             "-s", "input_focus:I", "DHLogger:D", "mytag:D", "AndroidRuntime:E",
+                            "GosuSdkProxy:E", "Unity:D",
                             "libc:F", "ActivityManager:I", "am_kill:I")
                             .redirectErrorStream(true).start();
                         BufferedReader r = new BufferedReader(
@@ -367,6 +394,32 @@ public final class GtvClip {
                                     String w = v.group(2);
                                     ux(ms, "VTC", v.group(1).trim() +
                                        (w != null && VTC_WORDS.contains(w) ? " " + w : ""));
+                                }
+                            } else if (tag.equals("GosuSdkProxy")) {
+                                if (msg.equals("SDK Request ShowLogin")) {
+                                    ux(ms, "GS", "ShowLogin");
+                                } else if (msg.equals("SDK Request logout")) {
+                                    ux(ms, "GS", "Logout");
+                                } else {
+                                    java.util.regex.Matcher g = GS_EVENT.matcher(msg);
+                                    if (g.find()) {
+                                        java.util.regex.Matcher st = GS_STATUS.matcher(g.group(2));
+                                        /* SdkResult: mStatus 1 = CODE_SUCCESS */
+                                        boolean fail = st.find() && !st.group(1).equals("1");
+                                        ux(ms, "GS", g.group(1) + (fail ? "_FAIL_c" + st.group(1) : "_SUCCESS"));
+                                    } else {
+                                        java.util.regex.Matcher tr = GS_TRACK.matcher(msg);
+                                        if (tr.find() && !tr.group(1).startsWith("ITS_tracking_")) {
+                                            ux(ms, "GS", tr.group(1));
+                                        }
+                                    }
+                                }
+                            } else if (tag.equals("Unity")) {
+                                /* the game's own Debug.Log lines share this tag: only
+                                 * the SDK bridge's "Call <method>" lines are kept */
+                                java.util.regex.Matcher c = GS_CALL.matcher(msg);
+                                if (c.matches()) {
+                                    ux(ms, "GS", c.group(1));
                                 }
                             } else if (tag.equals("AndroidRuntime")) {
                                 if (msg.startsWith("FATAL EXCEPTION")) {

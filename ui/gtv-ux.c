@@ -5,8 +5,9 @@
  *  - screens: the window that has input focus in Android (GtvClip "FOCUS"),
  *    e.g. SplashActivity -> AppActivity (loading) -> Authen (login/register)
  *    -> AppActivity (in game); dialogs too;
- *  - the game SDKs' own event names (GtvClip "DH" / "VTC"): splash/loading
- *    steps, SDK init, login start, register tab ...;
+ *  - the game SDKs' own event names (GtvClip "DH" / "VTC" / "GS"): splash/loading
+ *    steps, SDK init, login start, register tab ... ("GS": Gihot/Gosu + MYG
+ *    SDK of Ngạo Kiếm Vô Song: ShowLogin, onAuth_SUCCESS, ITS_tracking_enterGame);
  *  - "Application Not Responding" dialogs and game crashes;
  *  - clicks/keys per screen, AFK, and on which screen the window was closed.
  * Printed as "[UX] key=value ..." lines; the launcher writes them to the log
@@ -166,7 +167,7 @@ void gtv_ux_line(const char *line)
     if (!strcmp(kind, "FOCUS")) {
         short_name(text, name, sizeof(name));
         enter_screen(name, ms);
-    } else if (!strcmp(kind, "DH") || !strcmp(kind, "VTC")) {
+    } else if (!strcmp(kind, "DH") || !strcmp(kind, "VTC") || !strcmp(kind, "GS")) {
         short_name(text, name, sizeof(name));
         emit("event=%s:%s screen=%s", kind, name, screen);
     } else if (!strcmp(kind, "ANR")) {
